@@ -36,101 +36,40 @@ literal string across every unverified entry, which broke MongoDB's
 `unique` index on `nafdacNumber` — that's the `E11000 duplicate key` error
 if you hit it on an older copy of this file).
 
-## API
+## Bulk ingestion from NAFDAC Greenbook
 
-### `GET /api/v1/health`
-Liveness check.
+`src/data/ingestGreenbook.js` pulls real records directly from the
+Greenbook's own DataTables endpoint (found via browser DevTools — it's a
+jQuery DataTables grid, not a documented public API, so treat this as
+"working with what's there," not "using an official API"). It:
 
-### `GET /api/v1/medicines?q=<search term>`
-Searches by product name (text index + partial-match fallback).
-
-Response shapes:
-```json
-// found
-{ "status": "registered", "query": "p-alaxin", "results": [ { ...medicine } ] }
-
-// not found
-{ "status": "not_found", "query": "xyz", "message": "...", "results": [] }
-```
-
-### `GET /api/v1/medicines/nafdac/:number`
-Exact lookup by NAFDAC registration number. Case-insensitive (normalized to
-uppercase). Returns the medicine plus any linked `safetyAlerts`.
-
-```json
-// found
-{ "status": "registered", "medicine": { ... }, "safetyAlerts": [ ... ] }
-
-// not found
-{ "status": "not_found", "nafdacNumber": "X1-1234", "message": "..." }
-```
-
-**`status` is only ever `"registered"` or `"not_found"` — never `"fake"`.**
-This mirrors the PRD's core safety rule and is enforced in the controller,
-not left to the frontend to interpret.
-
-## Data model
-
-- `Medicine` — one document per registered product (see `src/models/Medicine.js`)
-- `SafetyAlert` — recalls/alerts, referenced by `medicine` ObjectId
-
-`dataSource` on each Medicine tracks provenance (`manual-seed` for now;
-swap to `nafdac-greenbook` / `emdex` once real ingestion exists), so you can
-tell seeded rows from ingested ones later without a migration.
-
-## Deploying to Render
-
-1. Push this repo to GitHub.
-2. New Web Service on Render → connect the repo.
-3. Build command: `npm install` (or `bun install`)
-4. Start command: `npm start`
-5. Add environment variables: `MONGODB_URI`, `CORS_ORIGIN` (your Vercel
-   frontend URL), `NODE_ENV=production`.
-6. After first deploy, run `npm run seed` locally against the same
-   `MONGODB_URI` (Atlas), or add a one-off Render job — don't seed from
-   inside the web service's boot sequence, or every redeploy wipes your data.
-
-## Not implemented yet (matches PRD's "Do Not Build Yet")
-No user accounts, AI chatbot, OCR, personalized dosage calculator, SMS/USSD,
-marketplace, or crowd reporting. `dosageReference` is static reference text
-only — never generate personalized dosage with an LLM, per PRD §7.
-
-
-
-<!-- # DrugGuard Backend
-
-Express + MongoDB API for the DrugGuard MVP. Pairs with the frontend at
-https://drug-guard-kappa.vercel.app/.
-
-## Stack
-- Node.js (runtime) — Bun used only for `bun install` if you prefer it over npm/yarn
-- Express.js
-- MongoDB via Mongoose
-
-## Setup
+- Paginates through all matching records (100/request) rather than one at a time
+- Upserts by `nafdacNumber` (safe to re-run; won't create duplicates)
+- Only ingests registration facts — indication/dosage/warnings are left
+  unset, because NAFDAC's data doesn't include them (see PRD §7 — that's
+  by design, not a gap in the script)
+- Rate-limits itself (400ms between requests) — this hits a government
+  server that wasn't built for bulk export, so don't remove the delay
 
 ```bash
-bun install        # or npm install
-cp .env.example .env
-# fill in MONGODB_URI (Atlas connection string) and CORS_ORIGIN
-npm run seed        # loads sample data — READ THE WARNING BELOW FIRST
-npm run dev          # starts on http://localhost:5000
+npm run ingest:greenbook
 ```
 
-## ⚠️ Before you demo or ship this
+Currently only ingests `product_category_id=1` ("Drugs", confirmed from a
+live response — ~8,941 total Greenbook records exist, most of which are
+Drugs). To add other categories (Vaccines & Biologics, Veterinary, etc.),
+capture their `product_category_id` the same way — DevTools → Network,
+filter to that category in the Greenbook UI, read the ID off the request —
+and add it to `CATEGORY_IDS` in the script.
 
-`src/data/seed.js` is a **hand-compiled sample**, not real NAFDAC ingestion.
-Two entries (P-Alaxin TS, P-Alaxin) have NAFDAC numbers confirmed from a
-cited public source. Every other entry has a NAFDAC number shaped like
-`A4-XXXXXX-VERIFY` — a placeholder, not a real registration number. Replace
-every `-VERIFY` entry with the real number from NAFDAC Greenbook
-(greenbook.nafdac.gov.ng) or a confirmed EMDEX export before this touches a
-real user. Presenting a fabricated number as "registered" is exactly the
-failure mode the PRD's safety section is trying to prevent — don't ship it.
+**Before running this against the full dataset repeatedly or in
+production**: check `greenbook.nafdac.gov.ng/robots.txt` and NAFDAC's terms
+of use for this endpoint. This script assumes that's been done; it wasn't
+done for you here.
 
 ## API
 
-### `GET /api/v1/health`
+### `GET /api/health`
 Liveness check.
 
 ### `GET /api/medicines?q=<search term>`
@@ -185,4 +124,4 @@ tell seeded rows from ingested ones later without a migration.
 ## Not implemented yet (matches PRD's "Do Not Build Yet")
 No user accounts, AI chatbot, OCR, personalized dosage calculator, SMS/USSD,
 marketplace, or crowd reporting. `dosageReference` is static reference text
-only — never generate personalized dosage with an LLM, per PRD §7. -->
+only — never generate personalized dosage with an LLM, per PRD §7.
