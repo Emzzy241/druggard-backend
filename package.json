@@ -7,7 +7,8 @@
   "scripts": {
     "dev": "nodemon src/server.js",
     "start": "node src/server.js",
-    "seed": "node --env-file=.env src/data/seed.js"
+    "seed": "node src/data/seed.js",
+    "ingest:greenbook": "node src/data/ingestGreenbook.js"
   },
   "dependencies": {
     "express": "^4.19.2",
